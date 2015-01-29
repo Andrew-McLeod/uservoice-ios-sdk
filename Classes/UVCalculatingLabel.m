@@ -6,7 +6,9 @@
 //  Copyright (c) 2012 UserVoice Inc. All rights reserved.
 //
 
+#import <CoreText/CoreText.h>
 #import "UVCalculatingLabel.h"
+#import "UVDefines.h"
 #import "UVUtils.h"
 
 @implementation UVCalculatingLabel
@@ -17,7 +19,7 @@
 
     NSString *letter = [self.text substringWithRange:NSMakeRange(index, 1)];
     CGSize letterSize = [UVUtils string:letter sizeWithFont:self.font];
-    
+
     int targetLineNumber = 0, targetColumnNumber = 0, elapsedChars = 0;
     NSString *targetLine = nil;
     for (int i = 0; i < [lines count]; i++) {
@@ -50,40 +52,45 @@
 
 - (NSArray *)breakString:(CGFloat)frameWidth {
     NSMutableArray *lines = [NSMutableArray array];
-    int len = (int)[self.text length];
-    int lineStartOffset = 0;
-    int lastBreakChar = -1;
+    NSAttributedString *s = [[NSAttributedString alloc]
+                             initWithString:self.text
+                             attributes:@{NSFontAttributeName:self.font}];
 
-    for (int i=0; i < len; i++) {
-        int currentLineLength = i - lineStartOffset;
-        NSString *currentChar = [self.text substringWithRange:NSMakeRange(i, 1)];
-        NSString *currentLine = [self.text substringWithRange:NSMakeRange(lineStartOffset, currentLineLength)];
-        if ([currentChar isEqualToString:@" "] || [currentChar isEqualToString:@"-"]) {
-            lastBreakChar = i;
-        } else if ([currentChar isEqualToString:@"\n"] && currentLineLength > 0) {
-            currentLine = [self.text substringWithRange:NSMakeRange(lineStartOffset, currentLineLength)];
-            lineStartOffset = i;
-            lastBreakChar = -1;
-            [lines addObject:currentLine];
-            continue;
+    if (IOS7) {
+        // >= iOS7 - use NSLayoutManager to determine lines that fit within frameWidth
+        NSTextContainer* tc = [[NSTextContainer alloc] initWithSize:CGSizeMake(frameWidth,CGFLOAT_MAX)];
+        NSLayoutManager* lm = [NSLayoutManager new];
+        NSTextStorage* tm = [[NSTextStorage alloc] initWithAttributedString:s];
+        [tm addLayoutManager:lm];
+        [lm addTextContainer:tc];
+        [lm enumerateLineFragmentsForGlyphRange:NSMakeRange(0,lm.numberOfGlyphs)
+                                     usingBlock:^(CGRect rect, CGRect usedRect,
+                                                  NSTextContainer *textContainer,
+                                                  NSRange glyphRange, BOOL *stop) {
+                                         NSRange r = [lm characterRangeForGlyphRange:glyphRange actualGlyphRange:nil];
+                                         [lines addObject:[s.string substringWithRange:r]];
+                                     }];
+    } else {
+        // Use CoreText instead to find lines that fit in frameWidth
+        CTFramesetterRef fs =
+        CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)s);
+        CGMutablePathRef path = CGPathCreateMutable();
+        CGPathAddRect(path, NULL, CGRectMake(0,0,frameWidth,CGFLOAT_MAX));
+        CTFrameRef f = CTFramesetterCreateFrame(fs, CFRangeMake(0, 0), path, NULL);
+        CTFrameDraw(f, NULL);
+
+        NSArray* ctlines = (__bridge NSArray*)CTFrameGetLines(f);
+        for (id aLine in ctlines) {
+            CTLineRef theLine = (__bridge CTLineRef)aLine;
+            CFRange range = CTLineGetStringRange(theLine);
+            NSRange r = NSMakeRange(range.location, range.length);
+            [lines addObject:[s.string substringWithRange:r]];
         }
-        
-        CGSize currentSize = [UVUtils string:currentLine sizeWithFont:self.font constrainedToSize:CGSizeMake(frameWidth, 1000) lineBreakMode:self.lineBreakMode];
-        
-        if (currentSize.height > self.font.lineHeight || currentSize.width > frameWidth) {
-            if (lastBreakChar == -1 || self.lineBreakMode == NSLineBreakByCharWrapping) {
-                currentLine = [self.text substringWithRange:NSMakeRange(lineStartOffset, currentLineLength)];
-                lineStartOffset = i;
-                i--;
-            } else {
-                currentLine = [self.text substringWithRange:NSMakeRange(lineStartOffset, lastBreakChar - lineStartOffset + 1)];
-                i = lineStartOffset = lastBreakChar + 1;
-                lastBreakChar = -1;
-            }
-            [lines addObject:currentLine];
-        }
+        CGPathRelease(path);
+        CFRelease(f);
+        CFRelease(fs);
     }
-    [lines addObject:[self.text substringWithRange:NSMakeRange(lineStartOffset, len - lineStartOffset)]];
+
     return lines;
 }
 
